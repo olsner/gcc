@@ -448,6 +448,9 @@ struct GTY((chain_next ("%h.outer"))) c_scope {
   /* All bindings in this scope.  */
   struct c_binding *bindings;
 
+  /* If not NULL, points to the first newly declared label in this scope. */
+  struct c_binding *new_label_bindings;
+
   /* For each scope (except the global one), a chain of BLOCK nodes
      for all the scopes that were entered and exited one level down.  */
   tree blocks;
@@ -805,6 +808,9 @@ free_binding_and_advance (struct c_binding *b)
   return prev;
 }
 
+static bool
+update_spot_bindings (struct c_scope *scope, struct c_spot_bindings *p);
+
 /* Bind a label.  Like bind, but skip fields which aren't used for
    labels, and add the LABEL_VARS value.  */
 static void
@@ -815,6 +821,9 @@ bind_label (tree name, tree label, struct c_scope *scope,
 
   bind (name, label, scope, /*invisible=*/false, /*nested=*/false,
 	UNKNOWN_LOCATION);
+
+  if (!scope->new_label_bindings)
+    scope->new_label_bindings = scope->bindings;
 
   scope->has_label_bindings = true;
 
@@ -1102,11 +1111,13 @@ update_label_decls (struct c_scope *scope)
   s = scope;
   while (s != NULL)
     {
-      if (s->has_label_bindings)
+      if (s->new_label_bindings)
 	{
+//          printf("Visiting scope %p (for %p)\n", (void*)s, (void*)scope);
 	  struct c_binding *b;
+	  struct c_binding *stop_b = s->new_label_bindings->prev;
 
-	  for (b = s->bindings; b != NULL; b = b->prev)
+	  for (b = s->bindings; b != stop_b; b = b->prev)
 	    {
 	      struct c_label_vars *label_vars;
 	      struct c_binding *b1;
@@ -1123,6 +1134,8 @@ update_label_decls (struct c_scope *scope)
 		hjud = false;
 	      else
 		hjud = label_vars->label_bindings.scope->has_jump_unsafe_decl;
+
+//              printf("Visiting label %s: hjud=%d scope=%p label_bindings scope=%p\n", b->id->identifier.id.str, hjud, (void*)scope, (void*)label_vars->label_bindings.scope);
 	      if (update_spot_bindings (scope, &label_vars->label_bindings))
 		{
 		  /* This label is defined in this scope.  */
@@ -1140,11 +1153,13 @@ update_label_decls (struct c_scope *scope)
 		    }
 		}
 
-	      /* Update the bindings of any goto statements associated
-		 with this label.  */
-	      FOR_EACH_VEC_SAFE_ELT (label_vars->gotos, ix, g)
-		update_spot_bindings (scope, &g->goto_bindings);
+              /* Update the bindings of any goto statements associated
+                 with this label.  */
+              FOR_EACH_VEC_SAFE_ELT (label_vars->gotos, ix, g)
+                  update_spot_bindings (scope, &g->goto_bindings);
 	    }
+
+	  s->new_label_bindings = NULL;
 	}
 
       /* Don't search beyond the current function.  */
@@ -4103,7 +4118,7 @@ check_earlier_gotos (tree label, struct c_label_vars* label_vars)
       /* We also need to warn about decls defined in any scopes
 	 between the scope of the label and the scope of the goto.  */
       for (scope = label_vars->label_bindings.scope;
-	   scope != g->goto_bindings.scope;
+	   scope && scope != g->goto_bindings.scope;
 	   scope = scope->outer)
 	{
 	  gcc_assert (scope != NULL);
@@ -4120,6 +4135,21 @@ check_earlier_gotos (tree label, struct c_label_vars* label_vars)
 		}
 	    }
 	}
+
+  if (0 && !scope) {
+      unsigned i = 0;
+      tree   id = DECL_NAME (label);
+      const char *name = IDENTIFIER_POINTER (id);
+      printf("goto_bindings scope %p not in scope chain for %s?\n",
+              (void*)g->goto_bindings.scope, name);
+      for (scope = label_vars->label_bindings.scope;
+	   scope;
+	   scope = scope->outer, i++)
+	{
+          printf("%u: %p\n", i, (void*)scope);
+        }
+  }
+
 
       if (g->goto_bindings.stmt_exprs > 0)
 	{
